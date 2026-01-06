@@ -69,3 +69,4 @@ htmlcov/
 # Distribution
 *.whl
 
+.env
