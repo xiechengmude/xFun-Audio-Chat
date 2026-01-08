@@ -125,6 +125,10 @@ class ASRModelManager:
         if not self._initialized:
             raise RuntimeError("ASR model not initialized")
 
+        # Ensure hotwords is a list, not None (model requires list)
+        if hotwords is None:
+            hotwords = []
+
         result = self.model.generate(
             input=[audio_path],
             cache={},
