@@ -139,27 +139,25 @@ class TTSModelManager:
                 else:
                     return chunk['tts_speech'].cpu().numpy()
 
-        # Preset speaker mode
+        # Preset speaker mode - use inference_sft
         else:
             log("info", f"Preset synthesis: {text[:50]}... (speaker: {speaker_id})")
 
-            # Get speaker embedding
-            if speaker_id in self.speaker_embeddings:
-                spk_embedding = self.speaker_embeddings[speaker_id]["embedding"]
-            else:
-                # Use default
-                if self.speaker_embeddings:
-                    default_key = list(self.speaker_embeddings.keys())[0]
-                    spk_embedding = self.speaker_embeddings[default_key]["embedding"]
-                    log("warning", f"Speaker '{speaker_id}' not found, using '{default_key}'")
-                else:
-                    raise ValueError(f"No speaker embeddings available")
+            # Map speaker_id to spk_id (CosyVoice uses different naming)
+            spk_id_map = {
+                "中文女": "中文女",
+                "中文男": "中文男",
+                "英文女": "英文女",
+                "英文男": "英文男",
+                "日文男": "日语男",
+                "粤语女": "粤语女",
+                "韩语女": "韩语女",
+            }
+            spk_id = spk_id_map.get(speaker_id, speaker_id)
 
-            # Use instruct2 for preset voices
-            for chunk in self.model.inference_instruct2(
+            for chunk in self.model.inference_sft(
                 tts_text=text,
-                instruct_text=f"You are a helpful assistant.<|endofprompt|>",
-                prompt_speech_16k=None,  # Will use speaker embedding
+                spk_id=spk_id,
                 stream=stream
             ):
                 if stream:
