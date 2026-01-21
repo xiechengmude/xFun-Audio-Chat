@@ -509,8 +509,25 @@ class PDFServer:
             dpi = int(data.get("dpi", self.model_manager.default_dpi))
             max_tokens = int(data.get("max_tokens", 4096))
 
-            # Read PDF data
-            pdf_data = pdf_file.file.read()
+            # Read PDF data - handle both aiohttp FileField and raw bytes
+            if hasattr(pdf_file, 'file'):
+                # Reset file position to beginning
+                pdf_file.file.seek(0)
+                pdf_data = pdf_file.file.read()
+            else:
+                pdf_data = pdf_file
+
+            # Ensure bytes type
+            if isinstance(pdf_data, str):
+                pdf_data = pdf_data.encode('latin-1')
+
+            # Validate PDF header
+            if not pdf_data.startswith(b'%PDF'):
+                log("error", f"Invalid PDF header: {pdf_data[:20]}")
+                return web.json_response(
+                    {"error": "Invalid PDF format - file does not start with %PDF", "success": False},
+                    status=400
+                )
 
             log("info", f"Received PDF: {len(pdf_data)} bytes, pages={pages}, dpi={dpi}")
 

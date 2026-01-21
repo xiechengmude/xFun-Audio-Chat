@@ -68,12 +68,14 @@ echo "=== Setup Complete ==="
 cd /workspace/Fun-Audio-Chat
 export PYTHONPATH=$(pwd)
 
-# Start vLLM server
+# Start vLLM server with memory optimization for A40
 nohup vllm serve lightonai/LightOnOCR-2-1B \\
     --port {vllm_port} \\
     --limit-mm-per-prompt '{{"image": 1}}' \\
     --mm-processor-cache-gb 0 \\
     --no-enable-prefix-caching \\
+    --gpu-memory-utilization 0.85 \\
+    --max-num-seqs 64 \\
     > vllm.log 2>&1 &
 echo $!
 '''
