@@ -6,6 +6,14 @@ accelerate
 deepspeed==0.17.3
 librosa
 
+# ASR Dependencies (Fun-ASR-Nano-2512)
+funasr
+
+# PDF-AI Dependencies (LightOnOCR-2-1B)
+pypdfium2>=4.0.0
+pillow>=10.0.0
+# vllm>=0.11.1  # Install separately with CUDA-specific version
+
 # CV3
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ # https://github.com/microsoft/onnxruntime/issues/21684
 conformer==0.3.2
