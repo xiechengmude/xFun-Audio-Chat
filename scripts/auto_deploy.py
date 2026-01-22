@@ -55,13 +55,28 @@ pip install sphn aiohttp
 pip install -r requirements.txt
 pip install 'ruamel.yaml<0.18' --force-reinstall
 
+echo "=== Phase 3.5: ASR Dependencies ==="
+pip install funasr
+
 echo "=== Phase 4: Download Models ==="
 pip install huggingface-hub
+
+# S2S Model
 if [ ! -d "pretrained_models/Fun-Audio-Chat-8B" ]; then
+    echo "Downloading Fun-Audio-Chat-8B..."
     huggingface-cli download FunAudioLLM/Fun-Audio-Chat-8B --local-dir ./pretrained_models/Fun-Audio-Chat-8B
 fi
+
+# TTS Model
 if [ ! -d "pretrained_models/Fun-CosyVoice3-0.5B-2512" ]; then
+    echo "Downloading Fun-CosyVoice3-0.5B-2512..."
     huggingface-cli download FunAudioLLM/Fun-CosyVoice3-0.5B-2512 --local-dir ./pretrained_models/Fun-CosyVoice3-0.5B-2512
+fi
+
+# ASR Model
+if [ ! -d "pretrained_models/Fun-ASR-Nano-2512" ]; then
+    echo "Downloading Fun-ASR-Nano-2512..."
+    huggingface-cli download FunAudioLLM/Fun-ASR-Nano-2512 --local-dir ./pretrained_models/Fun-ASR-Nano-2512
 fi
 
 echo "=== Setup Complete ==="
