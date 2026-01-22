@@ -3,9 +3,15 @@
 PDF-AI Service Automated Deployment Script
 Deploys vLLM + LightOnOCR-2-1B + PDF API Server on RunPod GPU Cloud
 
+Based on real deployment experience (2026-01-21):
+- Fixed vLLM OOM issue with memory optimization params
+- Uses user's fork repo with pdf_server.py
+- Improved error handling and retry logic
+- Extended timeouts for model loading
+
 Usage:
     python3 scripts/pdf_deploy.py --gpu H100
-    python3 scripts/pdf_deploy.py --gpu A100 --benchmark
+    python3 scripts/pdf_deploy.py --gpu A40 --benchmark
     python3 scripts/pdf_deploy.py --status
 """
 
@@ -36,39 +42,63 @@ class PDFServiceDeployer:
     VLLM_PORT = 8000  # Internal vLLM port
     API_PORT = 8006   # External PDF API port
 
-    # Setup commands
+    # Use user's fork which contains pdf_server.py
+    REPO_URL = "https://github.com/xiechengmude/xFun-Audio-Chat"
+
+    # Setup commands - updated based on real deployment
     SETUP_COMMANDS = '''
 set -e
 
 echo "=== Phase 1: System Dependencies ==="
-apt update && apt install -y poppler-utils
+apt update && apt install -y poppler-utils bc
 
 echo "=== Phase 2: Clone Repository ==="
 cd /workspace
-if [ ! -d "Fun-Audio-Chat" ]; then
-    git clone --recurse-submodules https://github.com/FunAudioLLM/Fun-Audio-Chat
+if [ -d "Fun-Audio-Chat" ]; then
+    echo "Repository exists, pulling latest..."
+    cd Fun-Audio-Chat
+    git pull origin main || true
+else
+    echo "Cloning repository..."
+    git clone --recurse-submodules {repo_url} Fun-Audio-Chat
+    cd Fun-Audio-Chat
 fi
-cd Fun-Audio-Chat
 
 echo "=== Phase 3: Python Dependencies ==="
-pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
-pip install vllm>=0.11.1
+# vLLM and dependencies (already installed in RunPod image usually)
+pip install --upgrade pip
+pip install vllm>=0.11.1 || echo "vLLM already installed"
 pip install pypdfium2>=4.0.0 pillow>=10.0.0 aiohttp
 
-echo "=== Phase 4: Download Model ==="
-pip install huggingface-hub
+echo "=== Phase 4: Verify pdf_server.py exists ==="
+if [ ! -f "web_demo/server/pdf_server.py" ]; then
+    echo "ERROR: pdf_server.py not found!"
+    exit 1
+fi
+echo "pdf_server.py found"
 
-# Pre-download the model to cache
-python3 -c "from huggingface_hub import snapshot_download; snapshot_download('lightonai/LightOnOCR-2-1B')"
+echo "=== Phase 5: Pre-download Model ==="
+pip install huggingface-hub
+python3 -c "from huggingface_hub import snapshot_download; snapshot_download('lightonai/LightOnOCR-2-1B')" || echo "Model may already be cached"
 
 echo "=== Setup Complete ==="
 '''
 
+    # vLLM start command with memory optimization (learned from OOM issue)
     START_VLLM_COMMAND = '''
 cd /workspace/Fun-Audio-Chat
 export PYTHONPATH=$(pwd)
 
-# Start vLLM server with memory optimization for A40
+# Kill any existing vLLM processes
+pkill -9 -f "vllm serve" 2>/dev/null || true
+sleep 3
+
+# Clear GPU memory
+python3 -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
+
+# Start vLLM server with memory optimization
+# --gpu-memory-utilization 0.85: Prevent OOM by limiting GPU memory usage
+# --max-num-seqs 64: Reduce concurrent sequences to save memory
 nohup vllm serve lightonai/LightOnOCR-2-1B \\
     --port {vllm_port} \\
     --limit-mm-per-prompt '{{"image": 1}}' \\
@@ -77,12 +107,18 @@ nohup vllm serve lightonai/LightOnOCR-2-1B \\
     --gpu-memory-utilization 0.85 \\
     --max-num-seqs 64 \\
     > vllm.log 2>&1 &
+
 echo $!
+sleep 5
 '''
 
     START_API_COMMAND = '''
 cd /workspace/Fun-Audio-Chat
 export PYTHONPATH=$(pwd)
+
+# Kill any existing PDF server
+pkill -f "pdf_server" 2>/dev/null || true
+sleep 2
 
 # Start PDF API server
 nohup python3 -m web_demo.server.pdf_server \\
@@ -90,34 +126,18 @@ nohup python3 -m web_demo.server.pdf_server \\
     --vllm-endpoint http://localhost:{vllm_port} \\
     --host 0.0.0.0 \\
     > pdf_server.log 2>&1 &
+
 echo $!
+sleep 3
 '''
 
     BENCHMARK_COMMAND = '''
 cd /workspace/Fun-Audio-Chat
 export PYTHONPATH=$(pwd)
 
-# Create test PDF
-python3 -c "
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-import io
-
-# Create simple test PDF
-buffer = io.BytesIO()
-c = canvas.Canvas(buffer, pagesize=letter)
-c.drawString(100, 750, 'PDF-AI Benchmark Test')
-c.drawString(100, 730, 'This is a test document for measuring throughput.')
-c.drawString(100, 710, 'The quick brown fox jumps over the lazy dog.')
-c.save()
-
-with open('/tmp/test.pdf', 'wb') as f:
-    f.write(buffer.getvalue())
-print('Test PDF created')
-" 2>/dev/null || echo "reportlab not available, using alternative method"
-
-# If reportlab failed, create a simple text-based PDF
-if [ ! -f /tmp/test.pdf ]; then
+# Download a real test PDF from arxiv
+curl -s -L -o /tmp/test.pdf "https://arxiv.org/pdf/1807.03090" 2>/dev/null || {{
+    # Fallback: create minimal PDF
     echo '%PDF-1.4
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
@@ -136,21 +156,27 @@ trailer << /Size 5 /Root 1 0 R >>
 startxref
 300
 %%EOF' > /tmp/test.pdf
-fi
+}}
 
-# Run benchmark
-echo "Running benchmark..."
+echo "=== Running Benchmark ==="
+echo "Testing single page parse..."
+
 START=$(date +%s.%N)
-
-curl -s -X POST http://localhost:{api_port}/api/parse \\
-    -F "file=@/tmp/test.pdf" \\
-    -o /tmp/result.json
-
+RESULT=$(curl -s -X POST http://localhost:{api_port}/api/parse -F "file=@/tmp/test.pdf" -F "pages=1")
 END=$(date +%s.%N)
-ELAPSED=$(echo "$END - $START" | bc)
 
-echo "Benchmark complete in $ELAPSED seconds"
-cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Throughput: {{d.get(\"throughput\", \"N/A\")}} pages/s')"
+echo "$RESULT" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('success'):
+        print(f'SUCCESS: Parsed 1 page in {{d[\"total_time\"]}}s')
+        print(f'Throughput: {{d[\"throughput\"]}} pages/s')
+    else:
+        print(f'FAILED: {{d.get(\"error\", \"Unknown error\")}}')
+except Exception as e:
+    print(f'Parse error: {{e}}')
+"
 '''
 
     def __init__(self, api_key: str):
@@ -232,6 +258,8 @@ cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); prin
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=30",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
             "-i", self.ssh_key_path,
             "-p", str(port),
             f"root@{ip}",
@@ -274,12 +302,13 @@ cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); prin
         print("Setting up environment...")
         print(f"{'='*60}")
 
+        setup_cmd = self.SETUP_COMMANDS.format(repo_url=self.REPO_URL)
         returncode, stdout, stderr = self.run_ssh_command(
-            ip, port, self.SETUP_COMMANDS, timeout=1800
+            ip, port, setup_cmd, timeout=1800  # 30 min timeout
         )
 
         print(stdout)
-        if stderr:
+        if stderr and "error" in stderr.lower():
             print(f"STDERR: {stderr}")
 
         if returncode != 0:
@@ -289,47 +318,67 @@ cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); prin
         print("Environment setup complete!")
         return True
 
-    def start_vllm(self, ip: str, ssh_port: int) -> Optional[str]:
-        """Start vLLM server"""
+    def start_vllm(self, ip: str, ssh_port: int, retry: int = 2) -> Optional[str]:
+        """Start vLLM server with retry logic"""
         print(f"\n{'='*60}")
         print("Starting vLLM server...")
         print(f"{'='*60}")
 
-        cmd = self.START_VLLM_COMMAND.format(vllm_port=self.VLLM_PORT)
-        returncode, stdout, stderr = self.run_ssh_command(ip, ssh_port, cmd, timeout=60)
+        for attempt in range(retry):
+            if attempt > 0:
+                print(f"\n  Retry attempt {attempt + 1}/{retry}...")
+                # Clear GPU memory before retry
+                self.run_ssh_command(
+                    ip, ssh_port,
+                    "pkill -9 vllm; sleep 5; nvidia-smi -r 2>/dev/null || true",
+                    timeout=60
+                )
 
-        if returncode != 0:
-            print(f"Failed to start vLLM: {stderr}")
-            return None
+            cmd = self.START_VLLM_COMMAND.format(vllm_port=self.VLLM_PORT)
+            returncode, stdout, stderr = self.run_ssh_command(ip, ssh_port, cmd, timeout=60)
 
-        pid = stdout.strip().split('\n')[-1]
-        print(f"vLLM started with PID: {pid}")
-        return pid
+            if returncode == 0:
+                pid = stdout.strip().split('\n')[-1]
+                print(f"vLLM started with PID: {pid}")
+                return pid
 
-    def wait_for_vllm(self, ip: str, ssh_port: int, timeout: int = 300) -> bool:
-        """Wait for vLLM to be ready"""
-        print(f"\nWaiting for vLLM to load model...")
+            print(f"  Failed to start vLLM (attempt {attempt + 1}): {stderr}")
+
+        return None
+
+    def wait_for_vllm(self, ip: str, ssh_port: int, timeout: int = 420) -> bool:
+        """Wait for vLLM to be ready (extended timeout: 7 min)"""
+        print(f"\nWaiting for vLLM to load model (up to {timeout}s)...")
         start_time = time.time()
 
         while time.time() - start_time < timeout:
+            elapsed = int(time.time() - start_time)
+
             # Check if vLLM is listening
             returncode, stdout, _ = self.run_ssh_command(
                 ip, ssh_port,
-                f"curl -s http://localhost:{self.VLLM_PORT}/health",
+                f"curl -s http://localhost:{self.VLLM_PORT}/health 2>/dev/null",
                 timeout=30
             )
 
             if returncode == 0 and stdout.strip():
-                print("  vLLM is ready!")
+                print(f"  vLLM is ready! (took {elapsed}s)")
                 return True
 
-            # Check logs for progress
+            # Check for errors in logs
             _, logs, _ = self.run_ssh_command(
                 ip, ssh_port,
-                "tail -5 /workspace/Fun-Audio-Chat/vllm.log 2>/dev/null || echo 'Loading...'",
+                "tail -3 /workspace/Fun-Audio-Chat/vllm.log 2>/dev/null",
                 timeout=30
             )
-            print(f"  {logs.strip().split(chr(10))[-1][:60]}...")
+
+            if "error" in logs.lower() and "cuda out of memory" in logs.lower():
+                print("  ERROR: CUDA OOM detected!")
+                return False
+
+            # Show progress
+            last_line = logs.strip().split('\n')[-1] if logs.strip() else "Loading..."
+            print(f"  [{elapsed}s] {last_line[:70]}...")
 
             time.sleep(15)
 
@@ -355,25 +404,33 @@ cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); prin
         print(f"PDF API server started with PID: {pid}")
         return pid
 
-    def verify_services(self, ip: str, ssh_port: int, api_ext_port: int,
-                        timeout: int = 60) -> bool:
+    def verify_services(self, ip: str, ssh_port: int,
+                        timeout: int = 90) -> bool:
         """Verify both services are running"""
         print(f"\nVerifying services...")
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            # Check PDF API
+            # Check PDF API health
             returncode, stdout, _ = self.run_ssh_command(
                 ip, ssh_port,
                 f"curl -s http://localhost:{self.API_PORT}/health",
                 timeout=30
             )
 
-            if returncode == 0 and "healthy" in stdout.lower():
-                print(f"  PDF API server is healthy!")
-                return True
+            if returncode == 0:
+                try:
+                    health = json.loads(stdout)
+                    if health.get("status") == "healthy" and health.get("vllm_healthy"):
+                        print(f"  PDF API: healthy")
+                        print(f"  vLLM: healthy")
+                        return True
+                    elif health.get("status") == "degraded":
+                        print(f"  PDF API: degraded (vLLM not ready)")
+                except:
+                    pass
 
-            print("  Waiting for PDF API server...")
+            print("  Waiting for services...")
             time.sleep(10)
 
         return False
@@ -386,16 +443,16 @@ cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); prin
 
         cmd = self.BENCHMARK_COMMAND.format(api_port=self.API_PORT)
         returncode, stdout, stderr = self.run_ssh_command(
-            ip, ssh_port, cmd, timeout=120
+            ip, ssh_port, cmd, timeout=180
         )
 
         print(stdout)
-        if stderr:
+        if stderr and "error" in stderr.lower():
             print(f"STDERR: {stderr}")
 
-        return {"output": stdout}
+        return {"output": stdout, "success": "SUCCESS" in stdout}
 
-    def deploy(self, gpu_type: str = "H100", name: str = None,
+    def deploy(self, gpu_type: str = "A40", name: str = None,
                disk_gb: int = 100, volume_gb: int = 100,
                run_benchmark: bool = False) -> Dict:
         """Full deployment workflow"""
@@ -455,17 +512,17 @@ cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); prin
             if not self.setup_environment(ip, ssh_port):
                 raise RuntimeError("Environment setup failed")
 
-            # Phase 5: Start vLLM
+            # Phase 5: Start vLLM (with retry)
             print("\n" + "="*60)
             print("PHASE 5: Starting vLLM Server")
             print("="*60)
-            vllm_pid = self.start_vllm(ip, ssh_port)
+            vllm_pid = self.start_vllm(ip, ssh_port, retry=2)
             if not vllm_pid:
-                raise RuntimeError("vLLM failed to start")
+                raise RuntimeError("vLLM failed to start after retries")
 
-            # Wait for vLLM to load model
-            if not self.wait_for_vllm(ip, ssh_port, timeout=300):
-                raise RuntimeError("vLLM failed to become ready")
+            # Wait for vLLM to load model (extended timeout)
+            if not self.wait_for_vllm(ip, ssh_port, timeout=420):
+                raise RuntimeError("vLLM failed to become ready (timeout or OOM)")
 
             # Phase 6: Start API Server
             print("\n" + "="*60)
@@ -479,7 +536,7 @@ cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); prin
             print("\n" + "="*60)
             print("PHASE 7: Verifying Services")
             print("="*60)
-            if not self.verify_services(ip, ssh_port, api_ext_port):
+            if not self.verify_services(ip, ssh_port):
                 raise RuntimeError("Service verification failed")
 
             result["success"] = True
@@ -507,27 +564,34 @@ cat /tmp/result.json | python3 -c "import sys,json; d=json.load(sys.stdin); prin
         print("="*60)
 
         if result["success"]:
-            print(f"Status: SUCCESS")
+            print(f"Status: SUCCESS ✓")
             print(f"Pod ID: {result['pod_id']}")
             print(f"Pod Name: {result['pod_name']}")
             print(f"GPU: {result['gpu']}")
             print(f"Public IP: {result['public_ip']}")
-            print(f"SSH: ssh root@{result['public_ip']} -p {result['ssh_port']} -i ~/.ssh/id_ed25519")
-            print("")
-            print("Services:")
-            print(f"  vLLM:    http://{result['public_ip']}:{result['vllm_port']} (internal)")
+            print(f"\nSSH Command:")
+            print(f"  ssh root@{result['public_ip']} -p {result['ssh_port']} -i ~/.ssh/id_ed25519")
+            print(f"\nServices:")
+            print(f"  vLLM:    http://{result['public_ip']}:{result['vllm_port']}")
             print(f"  PDF API: http://{result['public_ip']}:{result['api_port']}")
-            print("")
-            print("API Endpoints:")
+            print(f"\nAPI Endpoints:")
             print(f"  POST {result['api_endpoint']}")
             print(f"  POST http://{result['public_ip']}:{result['api_port']}/api/parse/batch")
             print(f"  POST http://{result['public_ip']}:{result['api_port']}/api/parse/stream")
             print(f"  GET  http://{result['public_ip']}:{result['api_port']}/health")
+            print(f"\nTest Command:")
+            print(f"  curl -X POST {result['api_endpoint']} -F 'file=@test.pdf'")
         else:
-            print(f"Status: FAILED")
+            print(f"Status: FAILED ✗")
             print(f"Error: {result['error']}")
             if result['pod_id']:
-                print(f"Pod ID (for debugging): {result['pod_id']}")
+                print(f"\nPod ID (for debugging): {result['pod_id']}")
+                if result['public_ip'] and result['ssh_port']:
+                    print(f"SSH: ssh root@{result['public_ip']} -p {result['ssh_port']} -i ~/.ssh/id_ed25519")
+                    print(f"\nDebug Commands:")
+                    print(f"  tail -100 /workspace/Fun-Audio-Chat/vllm.log")
+                    print(f"  tail -100 /workspace/Fun-Audio-Chat/pdf_server.log")
+                    print(f"  nvidia-smi")
 
         print("="*60)
 
@@ -572,24 +636,29 @@ def load_api_key() -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="PDF-AI Service Automated Deployment",
+        description="PDF-AI Service Automated Deployment (v2.0)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 pdf_deploy.py --gpu H100              # Deploy with H100 GPU (best)
-  python3 pdf_deploy.py --gpu A100 --benchmark  # Deploy and benchmark
+  python3 pdf_deploy.py --gpu A40               # Deploy with A40 GPU (tested)
+  python3 pdf_deploy.py --gpu H100 --benchmark  # Deploy with H100 and benchmark
   python3 pdf_deploy.py --status                # Show all pods status
   python3 pdf_deploy.py --gpu A40 --disk 150    # Custom disk size
+
+Performance (approximate):
+  H100: ~5.71 pages/s
+  A100: ~4.0 pages/s
+  A40:  ~3.0 pages/s
         """
     )
 
-    parser.add_argument("--gpu", default="H100",
-                        help="GPU type (H100, A100, A40)")
+    parser.add_argument("--gpu", default="A40",
+                        help="GPU type (H100, A100, A40) - default: A40")
     parser.add_argument("--name", help="Pod name (auto-generated if not specified)")
     parser.add_argument("--disk", type=int, default=100,
-                        help="Container disk size in GB")
+                        help="Container disk size in GB (default: 100)")
     parser.add_argument("--volume", type=int, default=100,
-                        help="Persistent volume size in GB")
+                        help="Persistent volume size in GB (default: 100)")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run benchmark after deployment")
     parser.add_argument("--status", action="store_true",
