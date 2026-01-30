@@ -85,13 +85,31 @@ echo "=== Setup Complete ==="
     START_SERVER_COMMAND = '''
 cd /workspace/Fun-Audio-Chat
 export PYTHONPATH=$(pwd)
+
+# Unset proxy
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+
+# 1. Start S2S + built-in TTS service
 nohup python3 -m web_demo.server.server \
     --model-path pretrained_models/Fun-Audio-Chat-8B \
     --port {port} \
     --tts-gpu 0 \
     --host 0.0.0.0 \
     > server.log 2>&1 &
-echo $!
+S2S_PID=$!
+echo "S2S PID: $S2S_PID"
+
+# 2. Start ASR service
+nohup python3 -m web_demo.server.asr_server \
+    --model-path pretrained_models/Fun-ASR-Nano-2512 \
+    --port 8003 \
+    --device cuda:0 \
+    --host 0.0.0.0 \
+    > asr_server.log 2>&1 &
+ASR_PID=$!
+echo "ASR PID: $ASR_PID"
+
+echo "$S2S_PID $ASR_PID"
 '''
 
     def __init__(self, api_key: str):
@@ -252,40 +270,53 @@ echo $!
         return pid
 
     def verify_server(self, ip: str, ssh_port: int, server_port: int,
-                      timeout: int = 120) -> bool:
-        """Verify the server is running and responding"""
-        print(f"\nVerifying server at {ip}:{server_port}...")
+                      timeout: int = 300) -> bool:
+        """Verify all services are running"""
+        print(f"\nVerifying services at {ip}...")
         start_time = time.time()
 
+        s2s_ready = False
+        asr_ready = False
+
         while time.time() - start_time < timeout:
-            # Check if process is running
-            returncode, stdout, _ = self.run_ssh_command(
-                ip, ssh_port,
-                f"ss -tlnp | grep :{self.SERVER_PORT}",
-                timeout=30
-            )
-
-            if returncode == 0 and stdout.strip():
-                print(f"  Server is listening on port {self.SERVER_PORT}")
-
-                # Check logs for successful model loading
-                _, logs, _ = self.run_ssh_command(
+            # Check S2S
+            if not s2s_ready:
+                returncode, stdout, _ = self.run_ssh_command(
                     ip, ssh_port,
-                    "tail -20 /workspace/Fun-Audio-Chat/server.log",
+                    f"ss -tlnp | grep :{self.SERVER_PORT}",
                     timeout=30
                 )
+                if returncode == 0 and stdout.strip():
+                    _, logs, _ = self.run_ssh_command(
+                        ip, ssh_port,
+                        "tail -20 /workspace/Fun-Audio-Chat/server.log",
+                        timeout=30
+                    )
+                    if "s2s model loaded" in logs.lower() or "cosyvoice loaded" in logs.lower():
+                        print(f"  S2S service ready (port {self.SERVER_PORT})")
+                        s2s_ready = True
 
-                if "s2s model loaded" in logs.lower() or "cosyvoice loaded" in logs.lower():
-                    print("  Models loaded successfully!")
-                    return True
-                else:
-                    print("  Waiting for models to load...")
-            else:
-                print("  Server not yet listening...")
+            # Check ASR
+            if not asr_ready:
+                returncode, stdout, _ = self.run_ssh_command(
+                    ip, ssh_port,
+                    "curl -s http://localhost:8003/health",
+                    timeout=30
+                )
+                if returncode == 0 and "healthy" in stdout.lower():
+                    print("  ASR service ready (port 8003)")
+                    asr_ready = True
 
+            if s2s_ready and asr_ready:
+                print("  All services verified!")
+                return True
+
+            status = f"S2S:{'OK' if s2s_ready else '...'} ASR:{'OK' if asr_ready else '...'}"
+            print(f"  Waiting... [{status}]")
             time.sleep(10)
 
-        return False
+        print(f"  Timeout. S2S:{s2s_ready} ASR:{asr_ready}")
+        return s2s_ready  # Partial success if at least S2S is up
 
     def deploy(self, gpu_type: str = "A40", name: str = None,
                disk_gb: int = 100, volume_gb: int = 100,
@@ -395,7 +426,8 @@ echo $!
             print(f"GPU: {result['gpu']}")
             print(f"Public IP: {result['public_ip']}")
             print(f"SSH: ssh root@{result['public_ip']} -p {result['ssh_port']} -i ~/.ssh/id_ed25519")
-            print(f"API Endpoint: {result['api_endpoint']}")
+            print(f"S2S Endpoint: {result['api_endpoint']}")
+            print(f"ASR Endpoint: http://{result['public_ip']}:{result.get('asr_port', 'N/A')}/api/transcribe")
         else:
             print(f"Status: FAILED")
             print(f"Error: {result['error']}")

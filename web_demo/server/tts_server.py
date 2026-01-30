@@ -83,11 +83,13 @@ class TTSModelManager:
                 fp16=False
             )
 
-            # Load default speaker embeddings
+            # Load and inject speaker embeddings into model
             spk_emb_path = os.path.join(project_root, 'utils/new_spk2info.pt')
             if os.path.exists(spk_emb_path):
-                self.speaker_embeddings = torch.load(spk_emb_path)
-                log("info", f"Loaded speaker embeddings: {list(self.speaker_embeddings.keys())}")
+                self.speaker_embeddings = torch.load(spk_emb_path, map_location='cpu', weights_only=False)
+                # Inject into CosyVoice3 frontend so inference_sft works
+                self.model.frontend.spk2info = self.speaker_embeddings
+                log("info", f"Loaded and injected speaker embeddings: {list(self.speaker_embeddings.keys())}")
             else:
                 self.speaker_embeddings = {}
                 log("warning", f"Speaker embeddings not found: {spk_emb_path}")
@@ -110,17 +112,7 @@ class TTSModelManager:
                    prompt_wav: str = None, prompt_text: str = None,
                    stream: bool = False):
         """
-        Synthesize speech from text
-
-        Args:
-            text: Text to synthesize
-            speaker_id: Speaker ID for preset voices
-            prompt_wav: Reference audio for zero-shot cloning
-            prompt_text: Text corresponding to reference audio
-            stream: Whether to return streaming audio
-
-        Yields/Returns:
-            Audio data as numpy array
+        Synthesize speech from text. Always a generator that yields numpy arrays.
         """
         if not self._initialized:
             raise RuntimeError("TTS model not initialized")
@@ -134,16 +126,13 @@ class TTSModelManager:
                 prompt_speech_16k=prompt_wav,
                 stream=stream
             ):
-                if stream:
-                    yield chunk['tts_speech'].cpu().numpy()
-                else:
-                    return chunk['tts_speech'].cpu().numpy()
+                yield chunk['tts_speech'].cpu().numpy()
+                if not stream:
+                    return
 
-        # Preset speaker mode - use inference_sft
+        # Preset speaker mode
         else:
             log("info", f"Preset synthesis: {text[:50]}... (speaker: {speaker_id})")
-
-            # Map speaker_id to spk_id (CosyVoice uses different naming)
             spk_id_map = {
                 "中文女": "中文女",
                 "中文男": "中文男",
@@ -160,10 +149,9 @@ class TTSModelManager:
                 spk_id=spk_id,
                 stream=stream
             ):
-                if stream:
-                    yield chunk['tts_speech'].cpu().numpy()
-                else:
-                    return chunk['tts_speech'].cpu().numpy()
+                yield chunk['tts_speech'].cpu().numpy()
+                if not stream:
+                    return
 
 
 class TTSServer:

@@ -73,23 +73,24 @@ class ASRModelManager:
         log("info", f"Loading ASR model from {model_path} to {device}...")
 
         try:
-            from funasr import AutoModel
             import sys
+            # Fix funasr internal import: fun_asr_nano/model.py uses bare "from ctc import CTC"
+            import funasr
+            funasr_nano_path = os.path.join(
+                os.path.dirname(funasr.__file__), "models", "fun_asr_nano"
+            )
+            if funasr_nano_path not in sys.path:
+                sys.path.insert(0, funasr_nano_path)
 
-            # Use local model path with remote_code
+            # Force register FunASRNano model class
+            import funasr.models.fun_asr_nano.model  # noqa: F401
+            from funasr import AutoModel
+
             abs_model_path = os.path.abspath(model_path)
-            remote_code_path = os.path.join(abs_model_path, "model.py")
-
             log("info", f"Using local model: {abs_model_path}")
-            log("info", f"Remote code: {remote_code_path}")
-
-            # Add model path to sys.path for imports
-            sys.path.insert(0, abs_model_path)
 
             self.model = AutoModel(
                 model=abs_model_path,
-                trust_remote_code=True,
-                remote_code=remote_code_path,
                 device=device,
                 disable_update=True,
             )
