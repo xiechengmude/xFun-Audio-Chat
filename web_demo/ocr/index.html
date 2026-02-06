@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GLM-OCR Document Recognition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' },
+                        accent: { 50: '#f0fdf4', 100: '#dcfce7', 200: '#bbf7d0', 400: '#4ade80', 500: '#22c55e', 600: '#16a34a' },
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+
+        /* Drop zone */
+        .drop-zone { transition: all 0.2s ease; }
+        .drop-zone.drag-over { border-color: #3b82f6; background: #eff6ff; transform: scale(1.01); }
+
+        /* Smooth transitions */
+        .fade-in { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Result card */
+        .result-card { transition: all 0.2s ease; }
+        .result-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+
+        /* Tab active */
+        .tab-active { border-bottom: 2px solid #3b82f6; color: #2563eb; font-weight: 600; }
+
+        /* Spinner */
+        .spinner { border: 3px solid #e5e7eb; border-top: 3px solid #3b82f6; border-radius: 50%; width: 24px; height: 24px; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* SSE progress bar */
+        .progress-bar { transition: width 0.3s ease; }
+
+        /* Scrollbar */
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 3px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .custom-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        /* Copy button */
+        .copy-btn { opacity: 0; transition: opacity 0.2s; }
+        .result-card:hover .copy-btn { opacity: 1; }
+
+        /* Region badge colors */
+        .badge-text { background: #dbeafe; color: #1e40af; }
+        .badge-formula { background: #fef3c7; color: #92400e; }
+        .badge-table { background: #d1fae5; color: #065f46; }
+        .badge-figure { background: #fce7f3; color: #9d174d; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- Header -->
+<header class="bg-white border-b border-gray-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex items-center justify-between h-16">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 bg-primary-600 rounded-lg flex items-center justify-center">
+                    <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-lg font-semibold text-gray-900">GLM-OCR</h1>
+                    <p class="text-xs text-gray-500">Document Recognition System</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <div id="healthStatus" class="flex items-center gap-2 text-sm">
+                    <span class="w-2 h-2 rounded-full bg-gray-300" id="healthDot"></span>
+                    <span class="text-gray-400" id="healthText">Connecting...</span>
+                </div>
+                <button onclick="showSettings()" class="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+</header>
+
+<!-- Settings Modal -->
+<div id="settingsModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="hideSettings()"></div>
+    <div class="absolute right-0 top-0 bottom-0 w-full max-w-md bg-white shadow-xl overflow-y-auto">
+        <div class="p-6">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-lg font-semibold text-gray-900">Settings</h2>
+                <button onclick="hideSettings()" class="p-1 text-gray-400 hover:text-gray-600">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="space-y-5">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1.5">API Endpoint</label>
+                    <input id="apiEndpoint" type="text" value="http://localhost:8007"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none" />
+                    <p class="mt-1 text-xs text-gray-500">OCR API server address</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1.5">Max Tokens</label>
+                    <input id="maxTokens" type="number" value="8192" min="256" max="32768"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none" />
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1.5">PDF DPI</label>
+                    <input id="pdfDpi" type="number" value="200" min="72" max="600"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none" />
+                </div>
+                <div class="flex items-center justify-between">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Layout Detection</label>
+                        <p class="text-xs text-gray-500">PP-DocLayout-V3 region segmentation</p>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input id="enableLayout" type="checkbox" checked class="sr-only peer">
+                        <div class="w-11 h-6 bg-gray-200 rounded-full peer peer-checked:bg-primary-600 peer-focus:ring-2 peer-focus:ring-primary-300 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full"></div>
+                    </label>
+                </div>
+                <button onclick="saveSettings()" class="w-full py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 transition">
+                    Save Settings
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Content -->
+<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+    <!-- Tab Navigation -->
+    <div class="flex border-b border-gray-200 mb-6">
+        <button onclick="switchTab('recognize')" id="tab-recognize" class="px-5 py-3 text-sm font-medium text-gray-600 hover:text-gray-900 border-b-2 border-transparent transition tab-active">
+            Image OCR
+        </button>
+        <button onclick="switchTab('extract')" id="tab-extract" class="px-5 py-3 text-sm font-medium text-gray-600 hover:text-gray-900 border-b-2 border-transparent transition">
+            Info Extract
+        </button>
+        <button onclick="switchTab('document')" id="tab-document" class="px-5 py-3 text-sm font-medium text-gray-600 hover:text-gray-900 border-b-2 border-transparent transition">
+            Document Parse
+        </button>
+        <button onclick="switchTab('batch')" id="tab-batch" class="px-5 py-3 text-sm font-medium text-gray-600 hover:text-gray-900 border-b-2 border-transparent transition">
+            Batch OCR
+        </button>
+    </div>
+
+    <!-- ==================== Tab: Image OCR ==================== -->
+    <div id="panel-recognize" class="tab-panel">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Left: Upload -->
+            <div>
+                <div class="bg-white rounded-xl border border-gray-200 p-6">
+                    <h3 class="text-sm font-semibold text-gray-900 mb-4">Upload Image</h3>
+
+                    <!-- Drop zone -->
+                    <div id="dropZone-recognize" class="drop-zone border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-primary-400 hover:bg-primary-50/30"
+                         onclick="document.getElementById('fileInput-recognize').click()">
+                        <div id="preview-recognize" class="hidden mb-4">
+                            <img id="previewImg-recognize" class="max-h-64 mx-auto rounded-lg shadow-sm" />
+                        </div>
+                        <div id="placeholder-recognize">
+                            <svg class="w-12 h-12 mx-auto text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                            <p class="text-sm text-gray-500 mb-1">Drag & drop image or click to upload</p>
+                            <p class="text-xs text-gray-400">PNG, JPG, WEBP supported</p>
+                        </div>
+                    </div>
+                    <input type="file" id="fileInput-recognize" accept="image/*" class="hidden" onchange="handleFileSelect(this, 'recognize')" />
+
+                    <!-- Task selector -->
+                    <div class="mt-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Recognition Task</label>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button onclick="selectTask('text')" id="task-text" class="task-btn px-3 py-2 text-sm rounded-lg border-2 border-primary-500 bg-primary-50 text-primary-700 font-medium transition">
+                                Text
+                            </button>
+                            <button onclick="selectTask('formula')" id="task-formula" class="task-btn px-3 py-2 text-sm rounded-lg border-2 border-gray-200 text-gray-600 hover:border-gray-300 font-medium transition">
+                                Formula
+                            </button>
+                            <button onclick="selectTask('table')" id="task-table" class="task-btn px-3 py-2 text-sm rounded-lg border-2 border-gray-200 text-gray-600 hover:border-gray-300 font-medium transition">
+                                Table
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Submit -->
+                    <button onclick="submitRecognize()" id="btn-recognize" class="mt-4 w-full py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-2" disabled>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                        </svg>
+                        Recognize
+                    </button>
+                </div>
+            </div>
+
+            <!-- Right: Result -->
+            <div>
+                <div id="result-recognize" class="bg-white rounded-xl border border-gray-200 p-6 min-h-[400px]">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-semibold text-gray-900">Recognition Result</h3>
+                        <div id="meta-recognize" class="text-xs text-gray-400 hidden"></div>
+                    </div>
+                    <div id="output-recognize" class="text-sm text-gray-500 flex items-center justify-center h-64">
+                        <p class="text-center">
+                            <svg class="w-16 h-16 mx-auto text-gray-200 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                            Upload an image to start
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== Tab: Info Extract ==================== -->
+    <div id="panel-extract" class="tab-panel hidden">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div>
+                <div class="bg-white rounded-xl border border-gray-200 p-6">
+                    <h3 class="text-sm font-semibold text-gray-900 mb-4">Upload Image</h3>
+                    <div id="dropZone-extract" class="drop-zone border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-primary-400"
+                         onclick="document.getElementById('fileInput-extract').click()">
+                        <div id="preview-extract" class="hidden mb-4">
+                            <img id="previewImg-extract" class="max-h-48 mx-auto rounded-lg shadow-sm" />
+                        </div>
+                        <div id="placeholder-extract">
+                            <svg class="w-10 h-10 mx-auto text-gray-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                            <p class="text-sm text-gray-500">Drop image here</p>
+                        </div>
+                    </div>
+                    <input type="file" id="fileInput-extract" accept="image/*" class="hidden" onchange="handleFileSelect(this, 'extract')" />
+
+                    <!-- Schema templates -->
+                    <div class="mt-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Extraction Schema</label>
+                        <div class="flex gap-2 mb-2 flex-wrap">
+                            <button onclick="setSchema('id_card')" class="px-2.5 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-md text-gray-600 transition">ID Card</button>
+                            <button onclick="setSchema('invoice')" class="px-2.5 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-md text-gray-600 transition">Invoice</button>
+                            <button onclick="setSchema('receipt')" class="px-2.5 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-md text-gray-600 transition">Receipt</button>
+                            <button onclick="setSchema('business_card')" class="px-2.5 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-md text-gray-600 transition">Business Card</button>
+                        </div>
+                        <textarea id="schemaInput" rows="5" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none" placeholder='{"name": "", "id_number": "", "address": ""}'></textarea>
+                    </div>
+
+                    <button onclick="submitExtract()" id="btn-extract" class="mt-4 w-full py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition" disabled>
+                        Extract Information
+                    </button>
+                </div>
+            </div>
+
+            <div>
+                <div class="bg-white rounded-xl border border-gray-200 p-6 min-h-[400px]">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-semibold text-gray-900">Extracted Data</h3>
+                        <div id="meta-extract" class="text-xs text-gray-400 hidden"></div>
+                    </div>
+                    <div id="output-extract" class="text-sm text-gray-500 flex items-center justify-center h-64">
+                        <p class="text-center text-gray-400">Upload an image and define a schema</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== Tab: Document Parse ==================== -->
+    <div id="panel-document" class="tab-panel hidden">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Left: Upload + Config -->
+            <div class="lg:col-span-1">
+                <div class="bg-white rounded-xl border border-gray-200 p-6">
+                    <h3 class="text-sm font-semibold text-gray-900 mb-4">Upload Document</h3>
+                    <div id="dropZone-document" class="drop-zone border-2 border-dashed border-gray-300 rounded-xl p-6 text-center cursor-pointer hover:border-primary-400"
+                         onclick="document.getElementById('fileInput-document').click()">
+                        <div id="preview-document" class="hidden">
+                            <svg class="w-10 h-10 mx-auto text-primary-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                            <p id="docFileName" class="text-sm text-primary-600 font-medium"></p>
+                            <p id="docFileSize" class="text-xs text-gray-400 mt-1"></p>
+                        </div>
+                        <div id="placeholder-document">
+                            <svg class="w-10 h-10 mx-auto text-gray-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                            </svg>
+                            <p class="text-sm text-gray-500">PDF or Image</p>
+                            <p class="text-xs text-gray-400">Drag & drop or click</p>
+                        </div>
+                    </div>
+                    <input type="file" id="fileInput-document" accept=".pdf,image/*" class="hidden" onchange="handleDocSelect(this)" />
+
+                    <div class="mt-4 space-y-3">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Pages</label>
+                            <input id="docPages" type="text" value="all" placeholder="all, 1-5, 1,3,5"
+                                class="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none" />
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-medium text-gray-600">Streaming</span>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input id="docStream" type="checkbox" checked class="sr-only peer">
+                                <div class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-primary-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button onclick="submitDocument()" id="btn-document" class="mt-4 w-full py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-2" disabled>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                        </svg>
+                        Parse Document
+                    </button>
+
+                    <!-- Progress -->
+                    <div id="docProgress" class="mt-4 hidden">
+                        <div class="flex items-center justify-between text-xs text-gray-500 mb-1.5">
+                            <span id="docProgressText">Processing...</span>
+                            <span id="docProgressPercent">0%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-1.5">
+                            <div id="docProgressBar" class="progress-bar bg-primary-500 h-1.5 rounded-full" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Results -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-xl border border-gray-200 p-6 min-h-[500px]">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-semibold text-gray-900">Document Results</h3>
+                        <div class="flex items-center gap-3">
+                            <div id="meta-document" class="text-xs text-gray-400 hidden"></div>
+                            <button id="btn-copy-all" onclick="copyAllText()" class="hidden px-2.5 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-md text-gray-600 transition">
+                                Copy All
+                            </button>
+                        </div>
+                    </div>
+                    <div id="output-document" class="space-y-4 custom-scroll max-h-[600px] overflow-y-auto">
+                        <div class="text-sm text-gray-400 flex items-center justify-center h-64">
+                            Upload a PDF or image to start
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== Tab: Batch OCR ==================== -->
+    <div id="panel-batch" class="tab-panel hidden">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div>
+                <div class="bg-white rounded-xl border border-gray-200 p-6">
+                    <h3 class="text-sm font-semibold text-gray-900 mb-4">Upload Images</h3>
+                    <div id="dropZone-batch" class="drop-zone border-2 border-dashed border-gray-300 rounded-xl p-6 text-center cursor-pointer hover:border-primary-400"
+                         onclick="document.getElementById('fileInput-batch').click()">
+                        <div id="placeholder-batch">
+                            <svg class="w-10 h-10 mx-auto text-gray-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                            <p class="text-sm text-gray-500">Drop multiple images</p>
+                            <p class="text-xs text-gray-400">or click to select</p>
+                        </div>
+                    </div>
+                    <input type="file" id="fileInput-batch" accept="image/*" multiple class="hidden" onchange="handleBatchSelect(this)" />
+
+                    <!-- Batch preview -->
+                    <div id="batchPreview" class="mt-3 hidden">
+                        <div class="flex flex-wrap gap-2" id="batchThumbs"></div>
+                        <p class="text-xs text-gray-400 mt-2"><span id="batchCount">0</span> images selected</p>
+                    </div>
+
+                    <div class="mt-4">
+                        <label class="block text-xs font-medium text-gray-600 mb-1">Task</label>
+                        <select id="batchTask" class="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none">
+                            <option value="text">Text Recognition</option>
+                            <option value="formula">Formula Recognition</option>
+                            <option value="table">Table Recognition</option>
+                        </select>
+                    </div>
+
+                    <button onclick="submitBatch()" id="btn-batch" class="mt-4 w-full py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition" disabled>
+                        Batch Recognize
+                    </button>
+                </div>
+            </div>
+
+            <div>
+                <div class="bg-white rounded-xl border border-gray-200 p-6 min-h-[400px]">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-semibold text-gray-900">Batch Results</h3>
+                        <div id="meta-batch" class="text-xs text-gray-400 hidden"></div>
+                    </div>
+                    <div id="output-batch" class="space-y-3 custom-scroll max-h-[500px] overflow-y-auto text-sm text-gray-400 flex items-center justify-center h-64">
+                        Select multiple images to process
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</main>
+
+<!-- Footer -->
+<footer class="mt-12 border-t border-gray-200 bg-white">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div class="flex items-center justify-between text-xs text-gray-400">
+            <span>GLM-OCR 0.9B + PP-DocLayout-V3</span>
+            <span>Powered by vLLM + FastAPI</span>
+        </div>
+    </div>
+</footer>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+let currentTab = 'recognize';
+let currentTask = 'text';
+let files = { recognize: null, extract: null, document: null, batch: [] };
+
+const SCHEMAS = {
+    id_card: '{"name": "", "gender": "", "nationality": "", "birth_date": "", "address": "", "id_number": ""}',
+    invoice: '{"invoice_number": "", "date": "", "seller": "", "buyer": "", "total_amount": "", "tax": "", "items": []}',
+    receipt: '{"store_name": "", "date": "", "items": [], "subtotal": "", "tax": "", "total": "", "payment_method": ""}',
+    business_card: '{"name": "", "title": "", "company": "", "phone": "", "email": "", "address": "", "website": ""}',
+};
+
+function getEndpoint() {
+    return (document.getElementById('apiEndpoint').value || 'http://localhost:8007').replace(/\/$/, '');
+}
+
+// ============================================================
+// Tabs
+// ============================================================
+function switchTab(tab) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+    document.querySelectorAll('[id^="tab-"]').forEach(t => t.classList.remove('tab-active'));
+    document.getElementById('panel-' + tab).classList.remove('hidden');
+    document.getElementById('tab-' + tab).classList.add('tab-active');
+    currentTab = tab;
+}
+
+// ============================================================
+// Settings
+// ============================================================
+function showSettings() { document.getElementById('settingsModal').classList.remove('hidden'); }
+function hideSettings() { document.getElementById('settingsModal').classList.add('hidden'); }
+function saveSettings() {
+    localStorage.setItem('ocr_endpoint', document.getElementById('apiEndpoint').value);
+    localStorage.setItem('ocr_max_tokens', document.getElementById('maxTokens').value);
+    localStorage.setItem('ocr_dpi', document.getElementById('pdfDpi').value);
+    localStorage.setItem('ocr_layout', document.getElementById('enableLayout').checked);
+    hideSettings();
+    checkHealth();
+}
+
+function loadSettings() {
+    const ep = localStorage.getItem('ocr_endpoint');
+    if (ep) document.getElementById('apiEndpoint').value = ep;
+    const mt = localStorage.getItem('ocr_max_tokens');
+    if (mt) document.getElementById('maxTokens').value = mt;
+    const dpi = localStorage.getItem('ocr_dpi');
+    if (dpi) document.getElementById('pdfDpi').value = dpi;
+    const layout = localStorage.getItem('ocr_layout');
+    if (layout !== null) document.getElementById('enableLayout').checked = layout === 'true';
+}
+
+// ============================================================
+// Health Check
+// ============================================================
+async function checkHealth() {
+    const dot = document.getElementById('healthDot');
+    const text = document.getElementById('healthText');
+    try {
+        const r = await fetch(getEndpoint() + '/health');
+        const d = await r.json();
+        if (d.status === 'healthy') {
+            dot.className = 'w-2 h-2 rounded-full bg-green-500';
+            text.textContent = 'Connected';
+            text.className = 'text-green-600';
+        } else {
+            dot.className = 'w-2 h-2 rounded-full bg-yellow-500';
+            text.textContent = 'Degraded';
+            text.className = 'text-yellow-600';
+        }
+    } catch {
+        dot.className = 'w-2 h-2 rounded-full bg-red-400';
+        text.textContent = 'Offline';
+        text.className = 'text-red-500';
+    }
+}
+
+// ============================================================
+// File Handling
+// ============================================================
+function handleFileSelect(input, type) {
+    const file = input.files[0];
+    if (!file) return;
+    files[type] = file;
+    const reader = new FileReader();
+    reader.onload = e => {
+        document.getElementById('preview-' + type).classList.remove('hidden');
+        document.getElementById('placeholder-' + type).classList.add('hidden');
+        document.getElementById('previewImg-' + type).src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+    document.getElementById('btn-' + type).disabled = false;
+}
+
+function handleDocSelect(input) {
+    const file = input.files[0];
+    if (!file) return;
+    files.document = file;
+    document.getElementById('preview-document').classList.remove('hidden');
+    document.getElementById('placeholder-document').classList.add('hidden');
+    document.getElementById('docFileName').textContent = file.name;
+    document.getElementById('docFileSize').textContent = formatSize(file.size);
+    document.getElementById('btn-document').disabled = false;
+}
+
+function handleBatchSelect(input) {
+    files.batch = Array.from(input.files);
+    if (!files.batch.length) return;
+    const thumbs = document.getElementById('batchThumbs');
+    thumbs.innerHTML = '';
+    files.batch.forEach((f, i) => {
+        const reader = new FileReader();
+        reader.onload = e => {
+            const img = document.createElement('img');
+            img.src = e.target.result;
+            img.className = 'w-16 h-16 object-cover rounded-lg border border-gray-200';
+            thumbs.appendChild(img);
+        };
+        reader.readAsDataURL(f);
+    });
+    document.getElementById('batchPreview').classList.remove('hidden');
+    document.getElementById('batchCount').textContent = files.batch.length;
+    document.getElementById('btn-batch').disabled = false;
+}
+
+// Drag & drop
+['recognize', 'extract', 'document', 'batch'].forEach(type => {
+    const zone = document.getElementById('dropZone-' + type);
+    if (!zone) return;
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+        e.preventDefault();
+        zone.classList.remove('drag-over');
+        const dt = e.dataTransfer;
+        if (type === 'batch') {
+            const input = document.getElementById('fileInput-batch');
+            input.files = dt.files;
+            handleBatchSelect(input);
+        } else if (type === 'document') {
+            const input = document.getElementById('fileInput-document');
+            input.files = dt.files;
+            handleDocSelect(input);
+        } else {
+            const input = document.getElementById('fileInput-' + type);
+            input.files = dt.files;
+            handleFileSelect(input, type);
+        }
+    });
+});
+
+// ============================================================
+// Task selector
+// ============================================================
+function selectTask(task) {
+    currentTask = task;
+    document.querySelectorAll('.task-btn').forEach(b => {
+        b.className = 'task-btn px-3 py-2 text-sm rounded-lg border-2 border-gray-200 text-gray-600 hover:border-gray-300 font-medium transition';
+    });
+    document.getElementById('task-' + task).className = 'task-btn px-3 py-2 text-sm rounded-lg border-2 border-primary-500 bg-primary-50 text-primary-700 font-medium transition';
+}
+
+function setSchema(key) {
+    document.getElementById('schemaInput').value = SCHEMAS[key] || '';
+}
+
+// ============================================================
+// API Calls
+// ============================================================
+function setLoading(btnId, loading) {
+    const btn = document.getElementById(btnId);
+    if (loading) {
+        btn._text = btn.innerHTML;
+        btn.innerHTML = '<div class="spinner"></div> Processing...';
+        btn.disabled = true;
+    } else {
+        btn.innerHTML = btn._text || 'Submit';
+        btn.disabled = false;
+    }
+}
+
+async function submitRecognize() {
+    if (!files.recognize) return;
+    setLoading('btn-recognize', true);
+    try {
+        const fd = new FormData();
+        fd.append('image', files.recognize);
+        fd.append('task', currentTask);
+        fd.append('max_tokens', document.getElementById('maxTokens').value);
+
+        const r = await fetch(getEndpoint() + '/api/ocr/recognize', { method: 'POST', body: fd });
+        const d = await r.json();
+
+        if (d.error) throw new Error(d.error);
+
+        const meta = document.getElementById('meta-recognize');
+        meta.classList.remove('hidden');
+        meta.textContent = `${d.task} | ${d.time}s`;
+
+        const out = document.getElementById('output-recognize');
+        out.innerHTML = `
+            <div class="result-card bg-gray-50 rounded-lg p-4 relative fade-in">
+                <button class="copy-btn absolute top-3 right-3 px-2 py-1 text-xs bg-white border border-gray-200 rounded-md hover:bg-gray-50" onclick="copyText(this)">Copy</button>
+                <pre class="whitespace-pre-wrap text-sm text-gray-800 font-mono leading-relaxed">${escapeHtml(d.text)}</pre>
+            </div>`;
+    } catch (e) {
+        showError('output-recognize', e.message);
+    }
+    setLoading('btn-recognize', false);
+}
+
+async function submitExtract() {
+    if (!files.extract) return;
+    const schema = document.getElementById('schemaInput').value.trim();
+    if (!schema) { alert('Please provide an extraction schema'); return; }
+    setLoading('btn-extract', true);
+    try {
+        const fd = new FormData();
+        fd.append('image', files.extract);
+        fd.append('schema', schema);
+        fd.append('max_tokens', document.getElementById('maxTokens').value);
+
+        const r = await fetch(getEndpoint() + '/api/ocr/extract', { method: 'POST', body: fd });
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+
+        const meta = document.getElementById('meta-extract');
+        meta.classList.remove('hidden');
+        meta.textContent = `${d.time}s`;
+
+        const out = document.getElementById('output-extract');
+        const isObj = typeof d.data === 'object';
+        out.innerHTML = `
+            <div class="result-card bg-gray-50 rounded-lg p-4 relative fade-in">
+                <button class="copy-btn absolute top-3 right-3 px-2 py-1 text-xs bg-white border border-gray-200 rounded-md hover:bg-gray-50" onclick="copyText(this)">Copy</button>
+                ${isObj ? renderJSON(d.data) : `<pre class="whitespace-pre-wrap text-sm text-gray-800">${escapeHtml(d.raw)}</pre>`}
+            </div>`;
+    } catch (e) {
+        showError('output-extract', e.message);
+    }
+    setLoading('btn-extract', false);
+}
+
+async function submitDocument() {
+    if (!files.document) return;
+    const useStream = document.getElementById('docStream').checked;
+    setLoading('btn-document', true);
+
+    const out = document.getElementById('output-document');
+    const progress = document.getElementById('docProgress');
+    const metaEl = document.getElementById('meta-document');
+
+    out.innerHTML = '';
+    progress.classList.remove('hidden');
+    document.getElementById('btn-copy-all').classList.add('hidden');
+
+    const fd = new FormData();
+    fd.append('file', files.document);
+    fd.append('pages', document.getElementById('docPages').value);
+    fd.append('enable_layout', document.getElementById('enableLayout').checked);
+    fd.append('dpi', document.getElementById('pdfDpi').value);
+    fd.append('max_tokens', document.getElementById('maxTokens').value);
+
+    try {
+        if (useStream) {
+            const r = await fetch(getEndpoint() + '/api/ocr/document/stream', { method: 'POST', body: fd });
+            const reader = r.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let totalPages = 0;
+            let done = 0;
+
+            while (true) {
+                const { value, done: readerDone } = await reader.read();
+                if (readerDone) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                let lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    try {
+                        const event = JSON.parse(line.slice(6));
+                        if (event.type === 'start') {
+                            totalPages = event.pages_to_parse;
+                            updateProgress(0, totalPages);
+                        } else if (event.type === 'page') {
+                            done++;
+                            updateProgress(done, totalPages);
+                            out.innerHTML += renderPageCard(event);
+                        } else if (event.type === 'error') {
+                            out.innerHTML += `<div class="bg-red-50 text-red-700 rounded-lg p-3 text-sm fade-in">Page ${event.page_number}: ${event.error}</div>`;
+                        } else if (event.type === 'complete') {
+                            metaEl.classList.remove('hidden');
+                            metaEl.textContent = `${event.total_time}s | ${event.throughput}`;
+                            document.getElementById('btn-copy-all').classList.remove('hidden');
+                        }
+                    } catch {}
+                }
+            }
+        } else {
+            updateProgress(0, 1, 'Processing...');
+            const r = await fetch(getEndpoint() + '/api/ocr/document', { method: 'POST', body: fd });
+            const d = await r.json();
+            if (d.error) throw new Error(d.error);
+
+            d.pages.forEach(p => out.innerHTML += renderPageCard(p));
+            metaEl.classList.remove('hidden');
+            metaEl.textContent = `${d.parsed_pages} pages | ${d.total_time}s | ${d.throughput}`;
+            document.getElementById('btn-copy-all').classList.remove('hidden');
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="bg-red-50 text-red-700 rounded-lg p-4 text-sm">${escapeHtml(e.message)}</div>`;
+    }
+
+    progress.classList.add('hidden');
+    setLoading('btn-document', false);
+}
+
+async function submitBatch() {
+    if (!files.batch.length) return;
+    setLoading('btn-batch', true);
+    try {
+        const fd = new FormData();
+        files.batch.forEach(f => fd.append('images', f));
+        fd.append('task', document.getElementById('batchTask').value);
+        fd.append('max_tokens', document.getElementById('maxTokens').value);
+
+        const r = await fetch(getEndpoint() + '/api/ocr/batch', { method: 'POST', body: fd });
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+
+        const meta = document.getElementById('meta-batch');
+        meta.classList.remove('hidden');
+        meta.textContent = `${d.total_time}s | ${d.throughput}`;
+
+        const out = document.getElementById('output-batch');
+        out.className = 'space-y-3 custom-scroll max-h-[500px] overflow-y-auto';
+        out.innerHTML = d.results.map((r, i) => `
+            <div class="result-card bg-gray-50 rounded-lg p-4 relative fade-in">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-medium text-gray-500">Image ${i + 1}</span>
+                    <button class="copy-btn px-2 py-1 text-xs bg-white border border-gray-200 rounded-md hover:bg-gray-50" onclick="copyText(this)">Copy</button>
+                </div>
+                ${r.error
+                    ? `<p class="text-red-600 text-sm">${escapeHtml(r.error)}</p>`
+                    : `<pre class="whitespace-pre-wrap text-sm text-gray-800 font-mono">${escapeHtml(r.text)}</pre>`
+                }
+            </div>
+        `).join('');
+    } catch (e) {
+        showError('output-batch', e.message);
+    }
+    setLoading('btn-batch', false);
+}
+
+// ============================================================
+// Rendering helpers
+// ============================================================
+function renderPageCard(page) {
+    const regions = (page.regions || []).map(r => `
+        <div class="ml-3 mt-2 p-2 border-l-2 border-gray-200">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="badge-${r.label?.includes('formula') ? 'formula' : r.label?.includes('table') ? 'table' : r.label?.includes('figure') ? 'figure' : 'text'} px-1.5 py-0.5 rounded text-xs font-medium">${escapeHtml(r.label || 'text')}</span>
+                <span class="text-xs text-gray-400">${r.score ? (r.score * 100).toFixed(1) + '%' : ''}</span>
+            </div>
+            <pre class="whitespace-pre-wrap text-xs text-gray-700 font-mono">${escapeHtml(r.text || '')}</pre>
+        </div>
+    `).join('');
+
+    return `
+        <div class="result-card bg-gray-50 rounded-lg p-4 relative fade-in">
+            <button class="copy-btn absolute top-3 right-3 px-2 py-1 text-xs bg-white border border-gray-200 rounded-md hover:bg-gray-50" onclick="copyText(this)">Copy</button>
+            <div class="flex items-center gap-3 mb-3">
+                <span class="px-2.5 py-1 bg-primary-100 text-primary-700 rounded-md text-xs font-semibold">Page ${page.page_number}</span>
+                <span class="text-xs text-gray-400">${page.processing_time}s${page.region_count ? ' | ' + page.region_count + ' regions' : ''}</span>
+            </div>
+            <pre class="whitespace-pre-wrap text-sm text-gray-800 font-mono leading-relaxed mb-2">${escapeHtml(page.text || '')}</pre>
+            ${regions ? '<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-700">Show regions</summary>' + regions + '</details>' : ''}
+        </div>`;
+}
+
+function renderJSON(obj) {
+    if (typeof obj !== 'object') return `<pre class="text-sm text-gray-800">${escapeHtml(String(obj))}</pre>`;
+    const rows = Object.entries(obj).map(([k, v]) => {
+        const val = typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
+        return `<tr><td class="py-1.5 pr-4 text-xs font-medium text-gray-500 align-top whitespace-nowrap">${escapeHtml(k)}</td><td class="py-1.5 text-sm text-gray-800">${escapeHtml(val)}</td></tr>`;
+    });
+    return `<table class="w-full">${rows.join('')}</table>`;
+}
+
+function updateProgress(done, total, text) {
+    const pct = total > 0 ? Math.round(done / total * 100) : 0;
+    document.getElementById('docProgressBar').style.width = pct + '%';
+    document.getElementById('docProgressPercent').textContent = pct + '%';
+    document.getElementById('docProgressText').textContent = text || `Page ${done}/${total}`;
+}
+
+function showError(elId, msg) {
+    document.getElementById(elId).innerHTML = `
+        <div class="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700 fade-in">
+            <p class="font-medium mb-1">Error</p>
+            <p>${escapeHtml(msg)}</p>
+        </div>`;
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function copyText(btn) {
+    const card = btn.closest('.result-card');
+    const pre = card.querySelector('pre');
+    if (pre) {
+        navigator.clipboard.writeText(pre.textContent).then(() => {
+            btn.textContent = 'Copied!';
+            setTimeout(() => btn.textContent = 'Copy', 1500);
+        });
+    }
+}
+
+function copyAllText() {
+    const pres = document.querySelectorAll('#output-document .result-card > pre');
+    const texts = Array.from(pres).map(p => p.textContent).join('\n\n---\n\n');
+    navigator.clipboard.writeText(texts).then(() => {
+        const btn = document.getElementById('btn-copy-all');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy All', 1500);
+    });
+}
+
+// ============================================================
+// Init
+// ============================================================
+loadSettings();
+checkHealth();
+setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>
