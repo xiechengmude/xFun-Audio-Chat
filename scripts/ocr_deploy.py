@@ -67,21 +67,27 @@ fi
 echo "=== Phase 3: Python Dependencies ==="
 pip install --upgrade pip
 
-# transformers from source (required by GLM-OCR)
-echo "Installing transformers from source..."
-pip install git+https://github.com/huggingface/transformers.git
+# IMPORTANT: Install order matters!
+# 1. vLLM nightly first (brings transformers 4.x as dependency)
+# 2. PaddlePaddle + PaddleX
+# 3. FastAPI stack
+# 4. transformers from source LAST (overrides to 5.x with glm_ocr support)
 
-# vLLM
-echo "Installing vLLM..."
-pip install "vllm>=0.11.1" || echo "vLLM already installed"
+echo "Step 1: Installing vLLM nightly (required for GLM-OCR native support)..."
+pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly || echo "vLLM nightly install failed, trying stable..."
+pip install "vllm>=0.15.0" 2>/dev/null || true
 
 # PaddlePaddle + PaddleX for layout detection
-echo "Installing PaddlePaddle..."
+echo "Step 2: Installing PaddlePaddle..."
 pip install paddlepaddle paddlex
 
 # FastAPI stack + utilities
-echo "Installing FastAPI stack..."
+echo "Step 3: Installing FastAPI stack..."
 pip install fastapi uvicorn httpx pypdfium2 pillow python-multipart
+
+# transformers from source MUST be last (GLM-OCR requires >=5.0 with glm_ocr arch)
+echo "Step 4: Installing transformers from source (MUST be last)..."
+pip install git+https://github.com/huggingface/transformers.git
 
 echo "=== Phase 4: Verify ocr_server.py exists ==="
 if [ ! -f "web_demo/server/ocr_server.py" ]; then
@@ -110,11 +116,11 @@ sleep 3
 # Clear GPU memory
 python3 -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
 
-# Start vLLM with MTP speculative decoding
+# Start vLLM (skip PaddleX connectivity check in subprocesses)
+export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 nohup vllm serve zai-org/GLM-OCR \
     --port {vllm_port} \
     --allowed-local-media-path / \
-    --speculative-config '{{"method": "mtp", "num_speculative_tokens": 1}}' \
     --served-model-name glm-ocr \
     --gpu-memory-utilization 0.85 \
     --max-num-seqs 64 \
@@ -134,11 +140,12 @@ export PYTHONPATH=$(pwd)
 pkill -f "ocr_server" 2>/dev/null || true
 sleep 2
 
-# Start OCR API server
-nohup python3 -m web_demo.server.ocr_server \
+# Start OCR API server (setsid to survive SSH disconnect)
+export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+setsid nohup python3 -m web_demo.server.ocr_server \
     --port {api_port} \
     --vllm-endpoint http://localhost:{vllm_port} \
-    --enable-layout \
+    --no-layout \
     --host 0.0.0.0 \
     > ocr_server.log 2>&1 &
 
