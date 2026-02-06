@@ -592,6 +592,9 @@ class OCRModelManager:
     # ----- Health check -----
 
     async def health_check(self) -> Dict:
+        if not self._initialized:
+            return {"status": "not_initialized", "vllm": False, "layout_model": False, "model": "N/A"}
+
         try:
             client = await self.get_client()
             resp = await client.get(f"{self.vllm_endpoint}/health")
@@ -599,13 +602,13 @@ class OCRModelManager:
         except Exception:
             vllm_healthy = False
 
-        layout_available = PADDLEX_AVAILABLE and self.enable_layout
+        layout_available = PADDLEX_AVAILABLE and getattr(self, "enable_layout", False)
 
         return {
             "status": "healthy" if vllm_healthy else "degraded",
             "vllm": vllm_healthy,
             "layout_model": layout_available,
-            "model": self.model_name,
+            "model": getattr(self, "model_name", "glm-ocr"),
         }
 
 
@@ -620,6 +623,13 @@ manager = OCRModelManager()
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     log("info", "OCR server starting up...")
+    # Initialize from env vars if not already initialized via main()
+    if not manager._initialized:
+        manager.initialize(
+            vllm_endpoint=os.environ.get("OCR_VLLM_ENDPOINT", "http://localhost:8000"),
+            model_name=os.environ.get("OCR_MODEL_NAME", "glm-ocr"),
+            enable_layout=os.environ.get("OCR_ENABLE_LAYOUT", "false").lower() == "true",
+        )
     yield
     log("info", "OCR server shutting down...")
     await manager.close()
